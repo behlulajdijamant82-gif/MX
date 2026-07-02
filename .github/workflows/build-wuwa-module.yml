@@ -15,49 +15,23 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential flex bison libncurses-dev libelf-dev bc git
-
-      - name: Clone kernel source
-        run: |
-          git clone --depth 1 https://github.com/ravindu644/android_kernel_a047f_eur /tmp/kernel_src
-
-      - name: Clone android-wuwa
-        run: |
-          git clone --depth 1 https://github.com/fuqiuluo/android-wuwa /tmp/android-wuwa
-
-      - name: Prepare kernel and build module
-        env:
-          KDIR: /tmp/kernel_src
-          MDIR: /tmp/android-wuwa
-          ARCH: arm64
-          CROSS_COMPILE: aarch64-linux-android-
-          PATH: /tmp/kernel_src/toolchain/clang/host/linux-x86/clang-r353983c/bin:/tmp/kernel_src/toolchain/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin:${{ env.PATH }}
-        run: |
-          set -e
-          cd $KDIR
-          # create a minimal config and prepare headers
-          make ARCH=$ARCH defconfig
-          make ARCH=$ARCH modules_prepare
-
-          # build the module
-          cd $MDIR
-          make KDIR=$KDIR ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE -j$(nproc)
-
-      - name: Package .ko into zip and add to assets
+      - name: Package existing .ko into zip and add to assets
         run: |
           set -e
           mkdir -p app/src/main/assets
-          KO=$(find /tmp/android-wuwa -name "*.ko" | head -n1)
+          # Find a .ko anywhere in the repository
+          KO=$(find . -type f -name "*.ko" | head -n1)
           if [ -z "$KO" ]; then
-            echo "No .ko found, aborting"
+            echo "No .ko found in repository, aborting"
             exit 1
           fi
           echo "Found ko: $KO"
           ZIPNAME=android-wuwa-android-4.19.198.zip
-          (cd $(dirname "$KO") && zip -j "$GITHUB_WORKSPACE/app/src/main/assets/$ZIPNAME" $(basename "$KO"))
+          TMP_DIR=$(mktemp -d)
+          KO_ZIP_NAME=$(basename "$KO")
+          cp "$KO" "$TMP_DIR/$KO_ZIP_NAME"
+          (cd "$TMP_DIR" && zip "$GITHUB_WORKSPACE/app/src/main/assets/$ZIPNAME" "$KO_ZIP_NAME")
+          rm -rf "$TMP_DIR"
 
       - name: Commit and push assets
         env:

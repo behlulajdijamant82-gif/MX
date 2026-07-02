@@ -4,11 +4,11 @@ on:
   push:
     branches: [ master ]
     paths:
-      - '**.rs'
-      - '**.kt'
-      - '**.java'
-      - '**.gradle'
-      - '**.gradle.kts'
+      - '**/*.rs'
+      - '**/*.kt'
+      - '**/*.java'
+      - '**/*.gradle'
+      - '**/*.gradle.kts'
       - 'gradle/**'
       - 'app/src/main/rust/**'
       - '.github/workflows/**'
@@ -109,12 +109,23 @@ jobs:
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
 
-    - name: Build Release APK
-      run: ./gradlew assembleRelease --stacktrace
-      env:
-        RELEASE_KEYSTORE_PATH: ${{ github.workspace }}/release.keystore
-        RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
-        RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+    - name: Create debug keystore
+      run: |
+        set -e
+        KEYSTORE_PATH=${{ github.workspace }}/debug.keystore
+        if [ ! -f "$KEYSTORE_PATH" ]; then
+          keytool -genkeypair -v -keystore "$KEYSTORE_PATH" -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+        else
+          echo "debug keystore already exists"
+        fi
+
+    - name: Build Release APK (signed with debug keystore)
+      run: |
+        ./gradlew assembleRelease --stacktrace \
+          -Pandroid.injected.signing.store.file=${{ github.workspace }}/debug.keystore \
+          -Pandroid.injected.signing.store.password=android \
+          -Pandroid.injected.signing.key.alias=androiddebugkey \
+          -Pandroid.injected.signing.key.password=android
 
     - name: Upload Release APK
       uses: actions/upload-artifact@v4

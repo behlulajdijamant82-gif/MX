@@ -3,6 +3,10 @@
 package moe.fuqiuluo.mamu
 
 import android.app.Application
+import android.content.Context
+import android.content.res.Configuration
+import android.os.Build
+import android.os.LocaleList
 import android.util.Log
 import com.tencent.mmkv.MMKV
 import kotlinx.coroutines.CoroutineScope
@@ -11,12 +15,14 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import moe.fuqiuluo.mamu.data.settings.chunkSize
 import moe.fuqiuluo.mamu.data.settings.compatibilityMode
+import moe.fuqiuluo.mamu.data.settings.languageSelection
 import moe.fuqiuluo.mamu.data.settings.memoryAccessMode
 import moe.fuqiuluo.mamu.data.settings.memoryBufferSize
 import moe.fuqiuluo.mamu.driver.PointerScanner
 import moe.fuqiuluo.mamu.driver.SearchEngine
 import moe.fuqiuluo.mamu.driver.WuwaDriver
 import java.io.File
+import java.util.Locale
 import kotlin.system.exitProcess
 
 private const val TAG = "MamuApplication"
@@ -87,6 +93,30 @@ class MamuApplication : Application() {
     private fun clearCodeCache() {
         val codeCacheDir = File(applicationInfo.dataDir, "code_cache")
         codeCacheDir.deleteRecursively()
+    }
+
+    override fun attachBaseContext(base: Context) {
+        super.attachBaseContext(updateBaseContextLocale(base))
+    }
+
+    private fun updateBaseContextLocale(base: Context): Context {
+        MMKV.initialize(base)
+        val mmkv = MMKV.defaultMMKV()
+        if (mmkv.languageSelection != 1) {
+            return base
+        }
+
+        val locale = Locale.ENGLISH
+        Locale.setDefault(locale)
+        val config = Configuration(base.resources.configuration)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            config.setLocales(LocaleList(locale))
+        } else {
+            config.locale = locale
+        }
+
+        return base.createConfigurationContext(config)
     }
 
     override fun onTerminate() {
