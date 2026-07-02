@@ -19,19 +19,25 @@ jobs:
         run: |
           set -e
           mkdir -p app/src/main/assets
-          # Find a .ko anywhere in the repository
-          KO=$(find . -type f -name "*.ko" | head -n1)
-          if [ -z "$KO" ]; then
-            echo "No .ko found in repository, aborting"
-            exit 1
+          ZIP_PATH=app/src/main/assets/android-wuwa-android-4.19.198.zip
+          if [ -f "$ZIP_PATH" ]; then
+            echo "Zip already exists at $ZIP_PATH; skipping packaging"
+            ls -l "$ZIP_PATH"
+          else
+            # Find a .ko anywhere in the repository
+            KO=$(find . -type f -name "*.ko" | head -n1)
+            if [ -z "$KO" ]; then
+              echo "No .ko found and no existing zip at $ZIP_PATH, aborting"
+              exit 1
+            fi
+            echo "Found ko: $KO"
+            TMP_DIR=$(mktemp -d)
+            KO_ZIP_NAME=$(basename "$KO")
+            cp "$KO" "$TMP_DIR/$KO_ZIP_NAME"
+            (cd "$TMP_DIR" && zip "$GITHUB_WORKSPACE/$ZIP_PATH" "$KO_ZIP_NAME")
+            rm -rf "$TMP_DIR"
+            echo "Packaged $KO into $ZIP_PATH"
           fi
-          echo "Found ko: $KO"
-          ZIPNAME=android-wuwa-android-4.19.198.zip
-          TMP_DIR=$(mktemp -d)
-          KO_ZIP_NAME=$(basename "$KO")
-          cp "$KO" "$TMP_DIR/$KO_ZIP_NAME"
-          (cd "$TMP_DIR" && zip "$GITHUB_WORKSPACE/app/src/main/assets/$ZIPNAME" "$KO_ZIP_NAME")
-          rm -rf "$TMP_DIR"
 
       - name: Commit and push assets
         env:
