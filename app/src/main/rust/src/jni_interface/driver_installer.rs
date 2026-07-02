@@ -18,6 +18,10 @@ use std::path::Path;
 lazy_static! {
     static ref DRIVER_LIST: Vec<(String, String)> = vec![
         (
+            ss!("android-4.19.198"),
+            ss!("asset://android-wuwa-android-4.19.198.zip")
+        ),
+        (
             ss!("android12-5.10"),
             ss!("https://vip.123pan.cn/1818969283/ymjew503t0m000dbc1fvq2noiiekti5yDIYPBdrzBIi1DvxPAIazAY==.png")
         ),
@@ -94,6 +98,20 @@ fn find_driver_url(driver_name: &str) -> Option<&str> {
     DRIVER_LIST.iter().find(|(name, _)| name == driver_name).map(|(_, url)| url.as_str())
 }
 
+fn read_asset_via_java(env: &mut JNIEnv, asset_name: &str) -> anyhow::Result<Vec<u8>> {
+    let asset_helper = env.find_class(s!("moe/fuqiuluo/mamu/utils/AssetHelper"))?;
+    let jname = env.new_string(asset_name)?;
+    let result = env.call_static_method(asset_helper, s!("readAsset"), s!("(Ljava/lang/String;)[B"), &[(&jname).into()])?;
+    let jbytes = result.l()?;
+    if jbytes.is_null() {
+        return Err(anyhow!("{}: {}", s!("从assets读取失败"), asset_name));
+    }
+
+    let byte_array = jni::objects::JByteArray::from(jbytes);
+    let vec = env.convert_byte_array(byte_array)?;
+    Ok(vec)
+}
+
 /// 下载并安装驱动（通过Java层的RootFileSystem和Shell）
 #[jni_method(
     90,
@@ -112,57 +130,89 @@ pub fn jni_download_and_install_driver<'l>(mut env: JNIEnv<'l>, _obj: JObject, d
             .ok_or_else(|| anyhow!("{}: {}", s!("未找到驱动"), driver_name_str))?
             .to_string();
 
-        let install_result = TOKIO_RUNTIME.block_on(async {
-            // 下载并解压，获取.ko文件内容
-            //debug!("{}: {}", s!("开始下载驱动"), driver_name_str);
-            let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(300))
-                .use_rustls_tls()
-                .build()
-                .map_err(|e| anyhow!("{}: {}", s!("创建HTTP客户端失败"), e))?;
+        let install_result = if url_str.starts_with("asset://") {
+            // load zip bytes from app assets via Java helper
+            let asset_name = url_str.trim_start_matches("asset://");
+            match read_asset_via_java(&mut env, asset_name) {
+                Ok(zip_bytes) => {
+                    let cursor = Cursor::new(zip_bytes.as_ref());
+                    let mut archive = zip::ZipArchive::new(cursor).map_err(|e| anyhow!("{}: {}", s!("解析ZIP文件失败"), e))?;
 
-            let response = client.get(&url_str).send().await.map_err(|e| {
-                let err_msg = format!("{}: {}", s!("下载请求失败"), e);
-                if err_msg.contains(s!("123pan")) {
-                    anyhow!("{}", s!("请检查您的网络连接，或者关闭一些代理软件!"))
-                } else {
-                    anyhow!("{}", err_msg)
+                    // 查找 .ko 文件
+                    let mut ko_file_data = None;
+                    let ko_filename = format!("{}{}", s!("android-wuwa-"), driver_name_str);
+
+                    for i in 0..archive.len() {
+                        let mut file = archive.by_index(i).map_err(|e| anyhow!("{}: {}", s!("读取ZIP条目失败"), e))?;
+
+                        if let Some(name) = file.name().rsplit('/').next().map(|it| it.to_string()) {
+                            if name.contains(&ko_filename) && name.ends_with(s!(".ko")) {
+                                let mut data = Vec::new();
+                                Read::read_to_end(&mut file, &mut data).map_err(|e| anyhow!("{}: {}", s!("读取.ko文件失败"), e))?;
+                                info!("{}: {}, {}: {}", s!("提取.ko文件成功"), name, s!("大小"), data.len());
+                                ko_file_data = Some(data);
+                                break;
+                            }
+                        }
+                    }
+
+                    ko_file_data.ok_or_else(|| anyhow!("{}", s!("未在ZIP中找到.ko文件")))
                 }
-            })?;
-
-            if !response.status().is_success() {
-                return Err(anyhow!("{}: {}", s!("下载失败，HTTP状态码"), response.status()));
+                Err(e) => Err(e),
             }
+        } else {
+            TOKIO_RUNTIME.block_on(async {
+                // 下载并解压，获取.ko文件内容
+                //debug!("{}: {}", s!("开始下载驱动"), driver_name_str);
+                let client = reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(300))
+                    .use_rustls_tls()
+                    .build()
+                    .map_err(|e| anyhow!("{}: {}", s!("创建HTTP客户端失败"), e))?;
 
-            let zip_bytes = response.bytes().await.map_err(|e| anyhow!("{}: {}", s!("读取响应数据失败"), e))?;
+                let response = client.get(&url_str).send().await.map_err(|e| {
+                    let err_msg = format!("{}: {}", s!("下载请求失败"), e);
+                    if err_msg.contains(s!("123pan")) {
+                        anyhow!("{}", s!("请检查您的网络连接，或者关闭一些代理软件!"))
+                    } else {
+                        anyhow!("{}", err_msg)
+                    }
+                })?;
 
-            //info!("{}: {}, {}: {}", s!("驱动下载完成"), driver_name_str, s!("大小"), zip_bytes.len());
+                if !response.status().is_success() {
+                    return Err(anyhow!("{}: {}", s!("下载失败，HTTP状态码"), response.status()));
+                }
 
-            // 直接从内存解压
-            //debug!("{}: {}", s!("开始解压驱动"), driver_name_str);
-            let cursor = Cursor::new(zip_bytes.as_ref());
-            let mut archive = zip::ZipArchive::new(cursor).map_err(|e| anyhow!("{}: {}", s!("解析ZIP文件失败"), e))?;
+                let zip_bytes = response.bytes().await.map_err(|e| anyhow!("{}: {}", s!("读取响应数据失败"), e))?;
 
-            // 查找 .ko 文件
-            let mut ko_file_data = None;
-            let ko_filename = format!("{}{}", s!("android-wuwa-"), driver_name_str);
+                //info!("{}: {}, {}: {}", s!("驱动下载完成"), driver_name_str, s!("大小"), zip_bytes.len());
 
-            for i in 0..archive.len() {
-                let mut file = archive.by_index(i).map_err(|e| anyhow!("{}: {}", s!("读取ZIP条目失败"), e))?;
+                // 直接从内存解压
+                //debug!("{}: {}", s!("开始解压驱动"), driver_name_str);
+                let cursor = Cursor::new(zip_bytes.as_ref());
+                let mut archive = zip::ZipArchive::new(cursor).map_err(|e| anyhow!("{}: {}", s!("解析ZIP文件失败"), e))?;
 
-                if let Some(name) = file.name().rsplit('/').next().map(|it| it.to_string()) {
-                    if name.contains(&ko_filename) && name.ends_with(s!(".ko")) {
-                        let mut data = Vec::new();
-                        Read::read_to_end(&mut file, &mut data).map_err(|e| anyhow!("{}: {}", s!("读取.ko文件失败"), e))?;
-                        info!("{}: {}, {}: {}", s!("提取.ko文件成功"), name, s!("大小"), data.len());
-                        ko_file_data = Some(data);
-                        break;
+                // 查找 .ko 文件
+                let mut ko_file_data = None;
+                let ko_filename = format!("{}{}", s!("android-wuwa-"), driver_name_str);
+
+                for i in 0..archive.len() {
+                    let mut file = archive.by_index(i).map_err(|e| anyhow!("{}: {}", s!("读取ZIP条目失败"), e))?;
+
+                    if let Some(name) = file.name().rsplit('/').next().map(|it| it.to_string()) {
+                        if name.contains(&ko_filename) && name.ends_with(s!(".ko")) {
+                            let mut data = Vec::new();
+                            Read::read_to_end(&mut file, &mut data).map_err(|e| anyhow!("{}: {}", s!("读取.ko文件失败"), e))?;
+                            info!("{}: {}, {}: {}", s!("提取.ko文件成功"), name, s!("大小"), data.len());
+                            ko_file_data = Some(data);
+                            break;
+                        }
                     }
                 }
-            }
 
-            ko_file_data.ok_or_else(|| anyhow!("{}", s!("未在ZIP中找到.ko文件")))
-        });
+                ko_file_data.ok_or_else(|| anyhow!("{}", s!("未在ZIP中找到.ko文件")))
+            })
+        };
 
         match install_result {
             Ok(ko_data) => {

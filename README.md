@@ -265,3 +265,16 @@ Contributions are welcome! Whether it's bug fixes, new features, documentation i
 This project is licensed under the **GNU General Public License v3.0 (GPLv3)**. See the [LICENSE](https://github.com/Shirasuki/MX/blob/master/LICENSE) file for the full license text.
 
 **[⬆ Back to Top](#mamu)**
+
+## Embedded Kernel Module Build (CI)
+
+This repository includes a GitHub Actions workflow that attempts to build the `android-wuwa` kernel module for your device kernel and, on success, packages the resulting `.ko` into `app/src/main/assets/android-wuwa-android-4.19.198.zip` so the app can install it from assets.
+
+- To run the build manually: open the repository on GitHub, go to the **Actions** tab, select **Build android-wuwa module** and click **Run workflow**.
+- The workflow will clone the kernel tree at `https://github.com/ravindu644/android_kernel_a047f_eur`, attempt to `make modules_prepare`, build `android-wuwa`, and upload the zip as an artifact. It will also try to commit the zip into `app/src/main/assets/` on success.
+- If the workflow fails with Kconfig or missing .config errors, provide your device's kernel `.config` (the config used to build the running kernel) or a prebuilt `.ko` for me to embed. I can then finish packaging locally.
+
+If you want me to continue automatically, tell me whether you'd like me to:
+
+- Trigger the GitHub Actions run for you (requires pushing these changes to the remote).
+- Or, upload your kernel `.config` (or a prebuilt `.ko`) and I will build/package locally and embed the asset straight into the app.

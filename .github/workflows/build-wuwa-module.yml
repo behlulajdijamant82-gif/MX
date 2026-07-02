@@ -1,0 +1,77 @@
+name: Build android-wuwa module
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-wuwa:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential flex bison libncurses-dev libelf-dev bc git
+
+      - name: Clone kernel source
+        run: |
+          git clone --depth 1 https://github.com/ravindu644/android_kernel_a047f_eur /tmp/kernel_src
+
+      - name: Clone android-wuwa
+        run: |
+          git clone --depth 1 https://github.com/fuqiuluo/android-wuwa /tmp/android-wuwa
+
+      - name: Prepare kernel and build module
+        env:
+          KDIR: /tmp/kernel_src
+          MDIR: /tmp/android-wuwa
+          ARCH: arm64
+          CROSS_COMPILE: aarch64-linux-android-
+          PATH: /tmp/kernel_src/toolchain/clang/host/linux-x86/clang-r353983c/bin:/tmp/kernel_src/toolchain/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin:${{ env.PATH }}
+        run: |
+          set -e
+          cd $KDIR
+          # create a minimal config and prepare headers
+          make ARCH=$ARCH defconfig
+          make ARCH=$ARCH modules_prepare
+
+          # build the module
+          cd $MDIR
+          make KDIR=$KDIR ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE -j$(nproc)
+
+      - name: Package .ko into zip and add to assets
+        run: |
+          set -e
+          mkdir -p app/src/main/assets
+          KO=$(find /tmp/android-wuwa -name "*.ko" | head -n1)
+          if [ -z "$KO" ]; then
+            echo "No .ko found, aborting"
+            exit 1
+          fi
+          echo "Found ko: $KO"
+          ZIPNAME=android-wuwa-android-4.19.198.zip
+          (cd $(dirname "$KO") && zip -j "$GITHUB_WORKSPACE/app/src/main/assets/$ZIPNAME" $(basename "$KO"))
+
+      - name: Commit and push assets
+        env:
+          GIT_AUTHOR_NAME: github-actions
+          GIT_AUTHOR_EMAIL: actions@github.com
+        run: |
+          git config user.name "$GIT_AUTHOR_NAME"
+          git config user.email "$GIT_AUTHOR_EMAIL"
+          git add app/src/main/assets/android-wuwa-android-4.19.198.zip
+          git commit -m "Add built android-wuwa module for 4.19.198 to assets" || echo "no changes to commit"
+          git push origin HEAD:${{ github.ref_name }} || echo "push failed"
+
+      - name: Upload artifact (zip)
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-wuwa-4.19.198
+          path: app/src/main/assets/android-wuwa-android-4.19.198.zip
